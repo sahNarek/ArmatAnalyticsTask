@@ -101,8 +101,8 @@ default_rules <- function() {
     }),
     
     list(id = "R4", desc = "Duplicate Patient Visit", check = function(df) {
-      duplicated(df[, c("patient_id", "visit_time")]) | 
-        duplicated(df[, c("patient_id", "visit_time")], fromLast = TRUE)
+      !(duplicated(df[, c("patient_id", "visit_time")]) | 
+          duplicated(df[, c("patient_id", "visit_time")], fromLast = TRUE))
     })
   )
 }
@@ -224,8 +224,6 @@ create_rules_overview <- function(df, rules = default_rules()){
     rule_id <- rules_overview$rule_id[i]
     flags   <- applied_results[[i]]
     
-    # TODO: Check flagging logic, should it be true or false
-    # TODO: Consider using df with rbind
     flagged_indices <- which(flags == FALSE)
     
     top_5 <- head(flagged_indices, 5)
@@ -247,4 +245,22 @@ create_rules_overview <- function(df, rules = default_rules()){
       original_df = rules_df
     )
   )
+}
+
+print_section_header <- function(title, leading_newlines = 0) {
+  if (leading_newlines > 0) {
+    cat(strrep("\n", leading_newlines))
+  }
+  cat("========================================\n")
+  cat(sprintf("%s\n", title))
+  cat("========================================\n\n")
+}
+
+print_summary_structure <- function(name, summary_obj) {
+  cat(sprintf("\n%s Summary structure:\n", name))
+  cat(sprintf("  - overview: %d fields\n", length(summary_obj$overview)))
+  cat(sprintf("  - patient_summary: %d rows x %d cols\n", 
+              nrow(summary_obj$patient_summary), ncol(summary_obj$patient_summary)))
+  cat(sprintf("  - rule_results: %d rules\n", nrow(summary_obj$rule_results)))
+  cat(sprintf("  - examples: %d rows\n", nrow(summary_obj$examples)))
 }
