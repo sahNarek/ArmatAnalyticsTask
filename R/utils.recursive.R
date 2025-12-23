@@ -1,3 +1,31 @@
+library(dplyr)
+library(purrr)
+library(dotenv)
+
+load_dot_env()
+
+get_env_numeric <- function(key, default) {
+  val <- Sys.getenv(key, unset = NA)
+  if (is.na(val) || val == "") {
+    return(default)
+  }
+  return(as.numeric(val))
+}
+
+SYSTOLIC_MIN   <- get_env_numeric("SYSTOLIC_MIN", 70)
+SYSTOLIC_MAX   <- get_env_numeric("SYSTOLIC_MAX", 220)
+DIASTOLIC_MIN  <- get_env_numeric("DIASTOLIC_MIN", 40)
+DIASTOLIC_MAX  <- get_env_numeric("DIASTOLIC_MAX", 140)
+HEART_RATE_MIN <- get_env_numeric("HEART_RATE_MIN", 30)
+HEART_RATE_MAX <- get_env_numeric("HEART_RATE_MAX", 220)
+TEMP_C_MIN     <- get_env_numeric("TEMP_C_MIN", 34)
+TEMP_C_MAX     <- get_env_numeric("TEMP_C_MAX", 41)
+PP_MIN         <- get_env_numeric("PP_MIN", 15)
+PP_MAX         <- get_env_numeric("PP_MAX", 120)
+
+VITALS_RAW     <- Sys.getenv("VITALS", unset = "systolic,diastolic,heart_rate,temp_c")
+VITALS         <- strsplit(VITALS_RAW, ",")[[1]]
+
 make_visits <- function(n = 2500) {
   set.seed(42)
   
@@ -48,19 +76,19 @@ make_visits <- function(n = 2500) {
 default_rules <- function() {
   list(
     list(id = "R1a", desc = "Systolic Range (70-220)", check = function(df) {
-      !is.na(df$systolic) & (df$systolic > 70 & df$systolic < 220)
+      !is.na(df$systolic) & (df$systolic > SYSTOLIC_MIN & df$systolic < SYSTOLIC_MAX)
     }),
     
     list(id = "R1b", desc = "Diastolic Range (40-140)", check = function(df) {
-      !is.na(df$diastolic) & (df$diastolic > 40 & df$diastolic < 140)
+      !is.na(df$diastolic) & (df$diastolic > DIASTOLIC_MIN & df$diastolic < DIASTOLIC_MAX)
     }),
     
     list(id = "R1c", desc = "Heart Rate Range (30-220)", check = function(df) {
-      !is.na(df$heart_rate) & (df$heart_rate > 30 & df$heart_rate < 220)
+      !is.na(df$heart_rate) & (df$heart_rate > HEART_RATE_MIN & df$heart_rate < 220)
     }),
     
     list(id = "R1d", desc = "Temperature Range (34-41)", check = function(df) {
-      !is.na(df$temp_c) & (df$temp_c > 34 & df$temp_c < 41)
+      !is.na(df$temp_c) & (df$temp_c > TEMP_C_MIN & df$temp_c < TEMP_C_MAX)
     }),
     
     list(id = "R2", desc = "Consistency (Diastolic < Systolic)", check = function(df) {
@@ -69,7 +97,7 @@ default_rules <- function() {
     
     list(id = "R3", desc = "Pulse Pressure Range (15-120)", check = function(df) {
       pp <- df$systolic - df$diastolic
-      !is.na(pp) & (pp > 15 & pp < 120)
+      !is.na(pp) & (pp > PP_MIN & pp < PP_MAX)
     }),
     
     list(id = "R4", desc = "Duplicate Patient Visit", check = function(df) {
@@ -82,5 +110,141 @@ default_rules <- function() {
 calculate_missing_percentage <- function(x) {
   return(
     mean(is.na(x)) * 100
+  )
+}
+
+create_overview_list <- function(df, vitals = VITALS) {
+  if (!is.data.frame(df)) {
+    stop("Input must be a data frame")
+  }
+  if (!all(c("patient_id", "clinic_id", "visit_time") %in% colnames(df))) {
+    stop("Data frame must contain patient_id, clinic_id, and visit_time columns")
+  }
+  if (!all(vitals %in% colnames(df))) {
+    stop("Some vital columns do not exist in the data frame")
+  }
+  
+  miss_pct <- vapply(
+    df[vitals],
+    function(vital){
+      calculate_missing_percentage(vital)
+    },
+    FUN.VALUE = numeric(1)
+  )
+  names(miss_pct) <- paste0(names(miss_pct), "_missing_pct")
+  overview_list <- list(
+    nrows = nrow(df),
+    npatients = length(unique(df$patient_id)),
+    nclinics = length(unique(df$clinic_id)),
+    datemin = min(df$visit_time),
+    datemax = max(df$visit_time)
+  )
+  return(
+    c(overview_list, as.list(miss_pct))
+  )
+}
+
+create_patient_overview <- function(df, vitals = VITALS){
+  if (!is.data.frame(df)) {
+    stop("Input must be a data frame")
+  }
+  if (!all(c("patient_id", "clinic_id", "visit_time") %in% colnames(df))) {
+    stop("Data frame must contain patient_id, clinic_id, and visit_time columns")
+  }
+  if (!all(vitals %in% colnames(df))) {
+    stop("Some vital columns do not exist in the data frame")
+  }
+  df_copy <- df
+  if (!"row_id" %in% colnames(df_copy)) {
+    df_copy$row_id <- c(1:nrow(df_copy))
+  }
+  
+  return(
+    df_copy %>% 
+      group_by(patient_id) %>% 
+      summarise(
+        n_visits = n(),
+        first_visit = min(visit_time),
+        last_visit = max(visit_time),
+        across(all_of(vitals), 
+               ~ calculate_missing_percentage(.x), 
+               .names = "{.col}_miss_pct"),
+        pct_missing_vitals = mean(is.na(c_across(all_of(vitals)))) * 100
+      )
+  ) 
+}
+
+create_rules_overview <- function(df, rules = default_rules()){
+  if (!is.data.frame(df)) {
+    stop("Input must be a data frame")
+  }
+  if (!all(c("patient_id", "clinic_id", "visit_time") %in% colnames(df))) {
+    stop("Data frame must contain patient_id, clinic_id, and visit_time columns")
+  }
+  
+  rules_df <- df
+  if (!"row_id" %in% colnames(rules_df)) {
+    rules_df$row_id <- c(1:nrow(rules_df))
+  }
+  
+  applied_results <- lapply(rules, function(rule){
+    rule$check(rules_df)
+  })
+  
+  rules_df$flags <- Reduce(`+`, applied_results)
+  nested_visits <- Reduce(
+    f = function(df, flag) {
+      df[flag[as.numeric(rownames(df))], ]
+    }, 
+    x = applied_results, 
+    init = rules_df
+  )
+  
+  all_criteria_met <- Reduce(`&`, applied_results)
+  filtered_df <- rules_df[all_criteria_met, ]
+  
+  
+  rules_overview <- map2_dfr(
+    applied_results,
+    rules,
+    function(result, rule) {
+      tibble(
+        rule_id = rule$id,
+        description = rule$desc,
+        n_passed = sum(result),
+        n_failed = sum(!result),
+        pct_passed = mean(result) * 100,
+        pct_failed = mean(!result) * 100
+      )
+    }
+  )
+  
+  
+  example_list <- lapply(seq_along(applied_results), function(i) {
+    rule_id <- rules_overview$rule_id[i]
+    flags   <- applied_results[[i]]
+    
+    # TODO: Check flagging logic, should it be true or false
+    # TODO: Consider using df with rbind
+    flagged_indices <- which(flags == FALSE)
+    
+    top_5 <- head(flagged_indices, 5)
+    
+    resulting_df <- rules_df[top_5,] %>% 
+      mutate(rule_id = rule_id) %>%
+      select(rule_id, row_id, patient_id, visit_time, everything())
+    
+  })
+  
+  examples_tbl <- do.call(rbind, example_list)
+    
+  
+  return(
+    list(
+      rules_overview = rules_overview,
+      examples = examples_tbl,
+      filtered_df = filtered_df,
+      original_df = rules_df
+    )
   )
 }
